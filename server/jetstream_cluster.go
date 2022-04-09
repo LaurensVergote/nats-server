@@ -6126,7 +6126,7 @@ func (s *Server) gcbTotal() int64 {
 // bytes of the runCatchup go routine of a given stream.
 func (s *Server) gcbAdd(localsz *int64, sz int64) {
 	s.gcbMu.Lock()
-	*localsz += sz
+	atomic.AddInt64(localsz, sz)
 	s.gcbOut += sz
 	if s.gcbOut >= maxTotalCatchupOutBytes && s.gcbKick == nil {
 		s.gcbKick = make(chan struct{})
@@ -6139,10 +6139,10 @@ func (s *Server) gcbAdd(localsz *int64, sz int64) {
 // has already been invoked. See that function for details.
 // Must be invoked under the gcbMu lock.
 func (s *Server) gcbSubLocked(localsz *int64, sz int64) {
-	if *localsz == 0 {
+	if atomic.LoadInt64(localsz) == 0 {
 		return
 	}
-	*localsz -= sz
+	atomic.AddInt64(localsz, -sz)
 	s.gcbOut -= sz
 	if s.gcbKick != nil && s.gcbOut < maxTotalCatchupOutBytes {
 		close(s.gcbKick)
