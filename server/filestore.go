@@ -400,11 +400,12 @@ func dynBlkSize(retention RetentionPolicy, maxBytes int64) uint64 {
 		if m := blkSize % 100; m != 0 {
 			blkSize += 100 - m
 		}
-		if blkSize < FileStoreMinBlkSize {
+		if blkSize <= FileStoreMinBlkSize {
 			blkSize = FileStoreMinBlkSize
-		}
-		if blkSize > FileStoreMaxBlkSize {
+		} else if blkSize >= FileStoreMaxBlkSize {
 			blkSize = FileStoreMaxBlkSize
+		} else {
+			blkSize = defaultMediumBlockSize
 		}
 		return uint64(blkSize)
 	}
