@@ -5793,7 +5793,7 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) error {
 	var sub *subscription
 	var err error
 
-	const activityInterval = 60 * time.Second
+	const activityInterval = 10 * time.Second
 	notActive := time.NewTimer(activityInterval)
 	defer notActive.Stop()
 
@@ -5814,12 +5814,53 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) error {
 		mset.mu.Unlock()
 	}()
 
+	var releaseSem bool
+	releaseSyncOutSem := func() {
+		if !releaseSem {
+			return
+		}
+		// Need to use select for the server shutdown case.
+		select {
+		case s.syncOutSem <- struct{}{}:
+		default:
+		}
+		releaseSem = false
+	}
+	// On exit, we will release our semaphore if we acquired it.
+	defer releaseSyncOutSem()
+
 RETRY:
+	// On retry, we need to release the semaphore we got. Call will be no-op
+	// if releaseSem boolean has not been set to true on successfully getting
+	// the semaphore.
+	releaseSyncOutSem()
+
+	if n.GroupLeader() == _EMPTY_ {
+		return fmt.Errorf("catchup for stream '%s > %s' aborted, no leader", mset.account(), mset.name())
+	}
+
 	// If we have a sub clear that here.
 	if sub != nil {
 		s.sysUnsubscribe(sub)
 		sub = nil
 	}
+
+	// Block here if we have too many requests in flight.
+	<-s.syncOutSem
+	releaseSem = true
+	if !s.isRunning() {
+		return nil
+	}
+
+	// We may have been blocked for a bit, so the reset need to ensure that we
+	// consume the already fired timer.
+	if !notActive.Stop() {
+		select {
+		case <-notActive.C:
+		default:
+		}
+	}
+	notActive.Reset(activityInterval)
 
 	// Grab sync request again on failures.
 	if sreq == nil {
@@ -5854,18 +5895,8 @@ RETRY:
 		err = nil
 		goto RETRY
 	}
-
-	// Block here if we have too many requests in flight.
-	<-s.syncOutSem
-	defer func() { s.syncOutSem <- struct{}{} }()
-	if !s.isRunning() {
-		return nil
-	}
 	b, _ := json.Marshal(sreq)
 	s.sendInternalMsgLocked(subject, reply, nil, b)
-
-	// Reset in case we stalled above.
-	notActive.Reset(activityInterval)
 
 	// Clear our sync request and capture last.
 	last := sreq.LastSeq
